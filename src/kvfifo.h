@@ -7,18 +7,18 @@
 #include <cstddef>  // For std::ptrdiff_t
 
 
-struct data {
-	list;
-	map;
-};
+// struct data {
+// 	list;
+// 	map;
+// };
 
-class kvfifo {
-	std::shared_ptr<data> queue_data;
-	//constructor:
-	void foo(kvfifo fifo) {
-		auto newqueue_data = std::makeshared<data>(*fifo->queue_data);
-	}
-};
+// class kvfifo {
+// 	std::shared_ptr<data> queue_data;
+// 	//constructor:
+// 	void foo(kvfifo fifo) {
+// 		auto newqueue_data = std::makeshared<data>(*fifo->queue_data);
+// 	}
+// };
 
 // Przy wykonywaniu zmiany kolejki, patrzymy ile obiektów patrzy na nasz shared pointer;
 // Jeśli patrzy więcej niż 1 obiekt, to musimy wykonać głęboką kopię przed zmianą.
@@ -220,7 +220,10 @@ public:
 	}
 
 	// Usuwa wszystkie elementy z kolejki. Złożoność O(n).
-	void clear();
+	void clear() {
+		queue_data->map.clear();
+		queue_data->elements.clear();
+	}
 
 	// TODO: Iterators:
 	// Iterator k_iterator oraz metody k_begin i k_end, pozwalające przeglądać zbiór
