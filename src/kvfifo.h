@@ -188,7 +188,10 @@ public:
 		return queue_data->elements.front();
 	}
 
-	std::pair<K const&, V&> back();
+	std::pair<K const&, V&> back() {
+		//Tymczasowe
+		return {queue_data->elements.back().first, queue_data->elements.back().second};
+	}
 
 	std::pair<K const&, V const&> back() const {
 		if (empty()) throw std::invalid_argument("Empty queue");
@@ -198,7 +201,10 @@ public:
 	// Metody first i last zwracają odpowiednio pierwszą i ostatnią parę
 	// klucz-wartość o danym kluczu, podobnie jak front i back. Jeśli podanego klucza
 	// nie ma w kolejce, to podnosi wyjątek std::invalid_argument. Złożoność O(log n).
-	std::pair<K const&, V&> first(K const& key);
+	std::pair<K const&, V&> first(K const& key) {
+		// Tymczasowe
+		return {queue_data->elements.front().first, queue_data->elements.front().second};
+	}
 
 	std::pair<K const&, V const&> first(K const& key) const {
 		if (count(key) == 0) throw std::invalid_argument("No matching key");
@@ -210,7 +216,10 @@ public:
 		return res;
 	}
 
-	std::pair<K const&, V&> last(K const& key);
+	std::pair<K const&, V&> last(K const& key) {
+		// Tymczasowe
+		return {queue_data->elements.front().first, queue_data->elements.front().second};
+	}
 
 	std::pair<K const&, V const&> last(K const& key) const {
 		if (count(key) == 0) throw std::invalid_argument("No matching key");
