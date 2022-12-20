@@ -3,9 +3,10 @@
 
 #include <map>
 #include <list>
-#include <iterator> // For std::forward_iterator_tag
-#include <cstddef>  // For std::ptrdiff_t
-#include <memory>   // For std::shared_ptr
+#include <iterator> 	// For std::forward_iterator_tag
+#include <cstddef>  	// For std::ptrdiff_t
+#include <memory>   	// For std::shared_ptr
+#include <stdexcept>	// For std::invalid_argument
 
 
 // struct data {
@@ -38,14 +39,15 @@
 // todo konstruktor przenoszący i destruktor muszą być no-throw.
 
 template <typename K, typename V> class kvfifo {
-	requires...
+	// requires...
 private:
-
+	using data_list_t = std::list<std::pair<K const &, V>>;
+	using data_map_value_t = std::list<typename data_list_t::iterator>;
 	struct data {
 		//mapa klucz, lista iterratorów na pozycje z elements w których, te klucze, value występują.
-		std::map<K, std::list <std::list::Iterator>> map;
+		std::map<K, data_map_value_t> map;
 		//lista dwukierunkowa z elementami
-		std::list<pair<K, V>> elements;
+		data_list_t elements;
 		data() = default;
 		data(struct data const& other) {
 			for (auto it = other.elements.begin(); it != other.elements.end(); ++it) {
@@ -55,7 +57,7 @@ private:
 			for (auto it = elements.begin(); it != elements.end(); ++it) {
 				auto map_pos = map.find(it->first);
 				if (map_pos == map.end()) {
-					std::list<std::list::Iterator> new_list;
+					data_map_value_t new_list;
 					new_list.push_back(it);
 					map.emplace(it->first, new_list);
 				}
@@ -68,7 +70,7 @@ private:
 
 	//ZDECYDOWANIE POPRAW!!!
 	void make_free_to_edit() {
-		if (queue_data.use_count > 1) {
+		if (queue_data.use_count() > 1) {
 			//sprawdz czy mamy wystarczającą pamieć?
 			std::shared_ptr<data> new_ptr = std::make_shared<data>(*queue_data);
 			queue_data = new_ptr;
@@ -117,22 +119,24 @@ public:
 	// Wstawia wartość v na koniec kolejki, nadając jej klucz k. Złożoność O(log n).
 	void push(K const& k, V const& v) {
 		make_free_to_edit();
-		queue_data->elements.push(std::make_pair(k, v));
+		queue_data->elements.push_back(std::make_pair(k, v));
 		if (!queue_data->map.contains(k))
-			queue_data->map.emplace(k, std::list<std::list::Iterator>());
-		queue_data->map.find(k)->push_back(std::prev(queue_data->elements.end()));
+			queue_data->map.emplace(k, data_map_value_t());
+		auto iter = queue_data->map.find(k);
+		auto data_list = iter->second;
+		data_list.push_back(std::prev(queue_data->elements.end()));
 	}
 
 	// Usuwa pierwszy element z kolejki. Jeśli kolejka jest pusta, to podnosi wyjątek std::invalid_argument. Złożoność O(log n).
 	void pop() {
-		if (empty()) throw(std::invalid_argument());
+		if (empty()) throw std::invalid_argument("Empty queue");
 		make_free_to_edit();
 
 		K deleted_key = queue_data->elements.begin()->first;
-		queue_data->map.find(deleted_key)->pop_front();
-		if (queue_data->map.find(deleted_key)->empty()) {
-			delete queue_data->map.find(deleted_key);
-			queue_data->map.erase(deleted_key);
+		queue_data->map.find(deleted_key)->second.pop_front();
+		if (queue_data->map.find(deleted_key)->second.empty()) {
+			auto iter = queue_data->map.find(deleted_key);
+			queue_data->map.erase(iter);
 		}
 		queue_data->elements.pop_front();
 	}
@@ -140,14 +144,14 @@ public:
 	// Usuwa pierwszy element o podanym kluczu z kolejki. Jeśli podanego klucza
 	// nie ma w kolejce, to podnosi wyjątek std::invalid_argument. Złożoność O(log n).
 	void pop(K const& x) {
-		if (count(x) == 0) throw(std::invalid_argument());
+		if (count(x) == 0) throw std::invalid_argument("No matching key");
 		make_free_to_edit();
 		auto iter = queue_data->map.find(x);
 		queue_data->list.erase(iter->second.front());
 		iter->second.pop_front();
 
 		if (iter->second.size() == 0)
-			map.erase(x);
+			queue_data->map.erase(x);
 
 	}
 
@@ -157,14 +161,14 @@ public:
 	// liczba przesuwanych elementów.
 	void move_to_back(K const& k) {
 		size_t how_many = count(k);
-		if (how_many == 0) throw(std::invalid_argument());
+		if (how_many == 0) throw std::invalid_argument("No matching key");
 		make_free_to_edit();
 
-		auto iter = queue_data->map.find(x);
+		auto iter = queue_data->map.find(k);
 		for (size_t i = 0; i < how_many; i++) {
-			queue_data->list.erase(iter->second.front());
-			queue_data->list.push_back(std::make_pair(iter->first, iter->second.front()));
-			iter->second.push_back(std::prev(queue_data->list.end()));
+			queue_data->elements.erase(iter->second.front());
+			queue_data->elements.push_back(std::make_pair(iter->first, iter->second.front()->second));
+			iter->second.push_back(std::prev(queue_data->elements.end()));
 			iter->second.pop_front();
 		}
 	}
@@ -174,19 +178,21 @@ public:
 	// modyfikująca kolejkę może unieważnić zwrócone referencje. Jeśli kolejka jest
 	// pusta, to podnosi wyjątek std::invalid_argument. Złożoność O(1).
 	std::pair<K const&, V&> front() {
-
+		// Tymczasowe:
+		
+		return {queue_data->elements.front().first, queue_data->elements.front().second};
 	}
 
 	std::pair<K const&, V const&> front() const {
-		if (this.empty()) throw(std::invalid_argument());
-		return queue_data->list.front();
+		if (empty()) throw std::invalid_argument("Empty queue");
+		return queue_data->elements.front();
 	}
 
 	std::pair<K const&, V&> back();
 
 	std::pair<K const&, V const&> back() const {
-		if (this.empty()) throw(std::invalid_argument());
-		return make_pair((--elements.end())->first, (--elements.end())->second);
+		if (empty()) throw std::invalid_argument("Empty queue");
+		return std::make_pair((--(queue_data->elements.end()))->first, (--(queue_data->elements.end()))->second);
 	}
 
 	// Metody first i last zwracają odpowiednio pierwszą i ostatnią parę
@@ -195,11 +201,11 @@ public:
 	std::pair<K const&, V&> first(K const& key);
 
 	std::pair<K const&, V const&> first(K const& key) const {
-		if (this.empty()) throw(std::invalid_argument());
-		auto iter = map.find(key);
-
+		if (count(key) == 0) throw std::invalid_argument("No matching key");
+		auto iter = queue_data->map.find(key);
+		auto list_iter = iter->second.front();
 		std::pair<K const&, V const&> res =
-		    make_pair(iter->begin()->first, iter->begin()->second);
+			std::make_pair(list_iter->first, list_iter->second);
 
 		return res;
 	}
@@ -207,11 +213,12 @@ public:
 	std::pair<K const&, V&> last(K const& key);
 
 	std::pair<K const&, V const&> last(K const& key) const {
-		if (this.empty()) throw(std::invalid_argument());
-		auto iter = map.find(key);
+		if (count(key) == 0) throw std::invalid_argument("No matching key");
+		auto iter = queue_data->map.find(key);
+		auto list_iter = iter->second.back();
 
 		std::pair<K const&, V const&> res =
-		    make_pair((--iter->end())->first, (--iter->end())->second);
+			std::make_pair(list_iter->first, list_iter->second);
 
 		return res;
 	}
@@ -228,9 +235,9 @@ public:
 	}
 
 	// Zwraca liczbę elementów w kolejce o podanym kluczu.
-	size_t count(K const&) const {
-		if (!queue_data->map.contains(K)) return 0;
-		queue_data->map.find(K)->size();
+	size_t count(K const& k) const {
+		if (!queue_data->map.contains(k)) return 0;
+		return queue_data->map.find(k)->second.size();
 	}
 
 	// Usuwa wszystkie elementy z kolejki. Złożoność O(n).
@@ -256,10 +263,10 @@ public:
 	public:
 		using iterator_category = std::bidirectional_iterator_tag;
 		using difference_type   = std::ptrdiff_t;
-		using map_iter_t 		= std::map<K, std::list <std::list::Iterator>>;
+		using map_iter_t 		= typename std::map<K, std::list<typename std::list<std::pair<K const &, V>>::iterator>>::iterator;
 
 		// Constructor
-		Iterator(map_iter_t ptr) : m_ptr(ptr) {}
+		k_iterator(map_iter_t iter) : iter(iter) {}
 
 		// Bidirectional const iterator's methods:
 
@@ -312,12 +319,12 @@ public:
 		map_iter_t iter;
 	};
 
-	k_iterator begin() const {
-		return k_iterator(map.begin());
+	k_iterator k_begin() const {
+		return k_iterator(queue_data->map.begin());
 	}
 
-	k_iterator end() const {
-		return k_iterator(map.end());
+	k_iterator k_end() const {
+		return k_iterator(queue_data->map.end());
 	}
 
 };
