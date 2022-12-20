@@ -48,8 +48,21 @@ private:
 		std::list<pair<K, V>> elements;
 		data() = default;
 		data(struct data const& other) {
-			map(other.map);
-			list(other.list);
+			for (auto it = other.elements.begin(); it != other.elements.end(); ++it) {
+				elements.push_back(std::make_pair(it->first, it->second));
+			}
+
+			for (auto it = elements.begin(); it != elements.end(); ++it) {
+				auto map_pos = map.find(it->first);
+				if (map_pos == map.end()) {
+					std::list<std::list::Iterator> new_list;
+					new_list.push_back(it);
+					map.emplace(it->first, new_list);
+				}
+				else {
+					map_pos->second.push_back(it);
+				}
+			}
 		}
 	};
 
