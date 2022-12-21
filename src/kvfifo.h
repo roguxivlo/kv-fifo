@@ -7,6 +7,7 @@
 #include <cstddef>  	// For std::ptrdiff_t
 #include <memory>   	// For std::shared_ptr
 #include <stdexcept>	// For std::invalid_argument
+#include <iostream>		// For debug
 
 // Przy wykonywaniu zmiany kolejki, patrzymy ile obiektów patrzy na nasz shared pointer;
 // Jeśli patrzy więcej niż 1 obiekt, to musimy wykonać głęboką kopię przed zmianą.
@@ -37,21 +38,27 @@ private:
 
 		// Deep Copy Constructor:
 		data(struct data const& other) {
+			data_list_t new_elements;
+			std::map<K, data_map_value_t> new_map;
+			
 			for (auto it = other.elements.begin(); it != other.elements.end(); ++it) {
-				elements.push_back(std::make_pair(it->first, it->second));
+				new_elements.push_back({it->first, it->second});
 			}
 
-			for (auto it = elements.begin(); it != elements.end(); ++it) {
-				auto map_pos = map.find(it->first);
-				if (map_pos == map.end()) {
+			for (auto it = new_elements.begin(); it != new_elements.end(); ++it) {
+				auto map_pos = new_map.find(it->first);
+				if (map_pos == new_map.end()) {
 					data_map_value_t new_list;
 					new_list.push_back(it);
-					map.emplace(it->first, new_list);
+					new_map.emplace(it->first, new_list);
 				}
 				else {
 					map_pos->second.push_back(it);
 				}
 			}
+
+			std::swap(map, new_map);
+			std::swap(elements, new_elements);
 		}
 
 		// Use default destructor:
@@ -87,33 +94,52 @@ private:
 		// Głębokiej kopii **nie robimy** wtw gdy:
 		// Jesteśmy unshareable, bo to znaczy że mamy wyłączność na queue_data
 		// Jesteśmy shareable, ale mamy wyłączność na wskaźnik.
-		if (!queue_data.unique() && !unshareable) {
+		
+		if (!(queue_data.unique()) && !unshareable) {
 			// Zrób deep copy:
+			// std::cout<<"deep copy";
 			queue_data = std::make_shared<data>(*queue_data);
 		}
+		// std::cout<<std::endl;
 		// W przeciwnym razie możemy zmodyfikować nasze queue_data.
 		// Aktualizuj atrybut unshareable:
 		unshareable = copy_is_unshareable;
 	}
 
+	
+
 public:
+// DEBUG:
+	void print_kvfifo() {
+		for (auto x : queue_data->elements) {
+			std::cout<<"("<<x.first<<" "<<x.second<<") ";
+		}
+		std::cout<<"\n";
+	}
+
 	bool unshareable;
 	std::shared_ptr<struct data> queue_data;
 
 	// Constructors:
 	kvfifo() :unshareable(false) {
 		//std::allocate_shared, std::allocate_shared_for_overwrite moze trzeba??
-		std::shared_ptr<data> queue_data = std::make_shared<data>();
+		// std::cout<<"empty constructor called: ";
+		queue_data = std::make_shared<data>();
+		// std::cout<<queue_data.use_count()<<"\n";
 	}
 
 	kvfifo(kvfifo const& other) : unshareable(false) {
+		// std::cout<<"copy constructor called: ";
 		// Jeśli możliwe, nie rób deep copy:
 		if (!other.unshareable) {
+			// std::cout<<"no deep copy: ";
 			queue_data = other.queue_data;
 		}
 		else {
+			// std::cout<<"deep copy: ";
 			queue_data = std::make_shared<data>(*(other.queue_data));
 		}
+		// std::cout<<"this: "<<queue_data.use_count()<<", other: "<< other.queue_data.use_count()<<"\n";
 	}
 
 	kvfifo(kvfifo&& other) noexcept : unshareable(false) {
@@ -122,16 +148,20 @@ public:
 	}
 
 	// Operators:
-	kvfifo& operator=(kvfifo other) {
+	kvfifo& operator=(kvfifo other) noexcept {
+		// std::cout<<"operator= called: ";
 		// Jeśli możliwe, nie rób deep copy:
 		if (!other.unshareable) {
+			// std::cout<<"no deep copy ";
 			queue_data = other.queue_data;
 		}
 		else {
+			// std::cout<<"deep copy";
 			queue_data = std::make_shared<data>(*(other.queue_data));
 		}
 		// Na pewno będziemy shareable:
 		unshareable = false;
+		// std::cout<<"this: "<<queue_data.use_count()<<", other: "<< other.queue_data.use_count()<<"\n";
 		return *this;
 	}
 
@@ -141,8 +171,10 @@ public:
 	void push(K const& k, V const& v) {
 		// Zmodyfikujemy, ale potem będziemy shareable (bo referencje się
 		// unieważniają). Chyba że nie będzie pamięci :DDDDD
+		// std::cout<<"push call: "<<queue_data.use_count()<<" ";
 		about_to_modify();
-		queue_data->elements.push_back(std::make_pair(k, v));
+		
+		queue_data->elements.push_back({k, v});
 		if (!queue_data->map.contains(k))
 			queue_data->map.emplace(k, data_map_value_t());
 		auto iter = queue_data->map.find(k);
@@ -152,22 +184,24 @@ public:
 
 	// Usuwa pierwszy element z kolejki. Jeśli kolejka jest pusta, to podnosi wyjątek std::invalid_argument. Złożoność O(log n).
 	void pop() {
+		// std::cout<<"pop() call. Before: ";
 		if (empty()) throw std::invalid_argument("Empty queue");
-		
 		about_to_modify();
 
-		K deleted_key = queue_data->elements.begin()->first;
+		K deleted_key = queue_data->elements.front().first;
 		queue_data->map.find(deleted_key)->second.pop_front();
 		if (queue_data->map.find(deleted_key)->second.empty()) {
 			auto iter = queue_data->map.find(deleted_key);
 			queue_data->map.erase(iter);
 		}
 		queue_data->elements.pop_front();
+
 	}
 
 	// Usuwa pierwszy element o podanym kluczu z kolejki. Jeśli podanego klucza
 	// nie ma w kolejce, to podnosi wyjątek std::invalid_argument. Złożoność O(log n).
 	void pop(K const& x) {
+		// std::cout<<"pop(K) call ";
 		if (count(x) == 0) throw std::invalid_argument("No matching key");
 
 		about_to_modify();
@@ -186,6 +220,7 @@ public:
 	// elementu o podanym kluczu nie ma w kolejce. Złożoność O(m + log n), gdzie m to
 	// liczba przesuwanych elementów.
 	void move_to_back(K const& k) {
+		// std::cout<<"move_to_back call ";
 		size_t how_many = count(k);
 		if (how_many == 0) throw std::invalid_argument("No matching key");
 		
@@ -194,7 +229,7 @@ public:
 		auto iter = queue_data->map.find(k);
 		for (size_t i = 0; i < how_many; i++) {
 			queue_data->elements.erase(iter->second.front());
-			queue_data->elements.push_back(std::make_pair(iter->first, iter->second.front()->second));
+			queue_data->elements.push_back({iter->first, iter->second.front()->second});
 			iter->second.push_back(std::prev(queue_data->elements.end()));
 			iter->second.pop_front();
 		}
@@ -275,7 +310,7 @@ public:
 		auto list_iter = iter->second.back();
 
 		std::pair<K const&, V const&> res =
-			std::make_pair(list_iter->first, list_iter->second);
+			{list_iter->first, list_iter->second};
 
 		return res;
 	}
