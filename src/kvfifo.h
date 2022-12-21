@@ -109,40 +109,48 @@ private:
 	
 
 public:
-// DEBUG:
+	// DEBUG:
 	void print_kvfifo() {
 		for (auto x : queue_data->elements) {
 			std::cout<<"("<<x.first<<" "<<x.second<<") ";
 		}
+		std::cout<<"MAP: ";
+		for (auto x : queue_data->map) {
+			for (auto y : x.second) {
+				std::cout<<"("<<y->first<<" "<<y->second<<") ";
+			}
+		}
 		std::cout<<"\n";
 	}
 
-	bool unshareable;
+	bool unshareable = false;
 	std::shared_ptr<struct data> queue_data;
 
 	// Constructors:
-	kvfifo() :unshareable(false) {
+	kvfifo() {
 		//std::allocate_shared, std::allocate_shared_for_overwrite moze trzeba??
 		// std::cout<<"empty constructor called: ";
 		queue_data = std::make_shared<data>();
 		// std::cout<<queue_data.use_count()<<"\n";
 	}
 
-	kvfifo(kvfifo const& other) : unshareable(false) {
+	kvfifo(kvfifo const& other) {
+		std::cout<<"copy\n";
 		// std::cout<<"copy constructor called: ";
 		// Jeśli możliwe, nie rób deep copy:
 		if (!other.unshareable) {
-			// std::cout<<"no deep copy: ";
+			std::cout<<"no deep copy: ";
 			queue_data = other.queue_data;
 		}
 		else {
-			// std::cout<<"deep copy: ";
+			std::cout<<"deep copy: ";
 			queue_data = std::make_shared<data>(*(other.queue_data));
 		}
 		// std::cout<<"this: "<<queue_data.use_count()<<", other: "<< other.queue_data.use_count()<<"\n";
 	}
 
-	kvfifo(kvfifo&& other) noexcept : unshareable(false) {
+	kvfifo(kvfifo&& other) noexcept {
+		std::cout<<"move\n";
 		queue_data = other.queue_data;
 		other.queue_data = nullptr; //albo NULL
 	}
@@ -177,9 +185,9 @@ public:
 		queue_data->elements.push_back({k, v});
 		if (!queue_data->map.contains(k))
 			queue_data->map.emplace(k, data_map_value_t());
+		else std::cout<<"push: kluczbyl\n";
 		auto iter = queue_data->map.find(k);
-		auto data_list = iter->second;
-		data_list.push_back(std::prev(queue_data->elements.end()));
+		iter->second.push_back(std::prev(queue_data->elements.end()));
 	}
 
 	// Usuwa pierwszy element z kolejki. Jeśli kolejka jest pusta, to podnosi wyjątek std::invalid_argument. Złożoność O(log n).
@@ -226,6 +234,7 @@ public:
 		
 		about_to_modify();
 
+		// iterator w mapie.
 		auto iter = queue_data->map.find(k);
 		for (size_t i = 0; i < how_many; i++) {
 			queue_data->elements.erase(iter->second.front());
