@@ -8,26 +8,8 @@
 #include <memory>   	// For std::shared_ptr
 #include <stdexcept>	// For std::invalid_argument
 
-
-// struct data {
-// 	list;
-// 	map;
-// };
-
-// class kvfifo {
-// 	std::shared_ptr<data> queue_data;
-// 	//constructor:
-// 	void foo(kvfifo fifo) {
-// 		auto newqueue_data = std::makeshared<data>(*fifo->queue_data);
-// 	}
-// };
-
 // Przy wykonywaniu zmiany kolejki, patrzymy ile obiektów patrzy na nasz shared pointer;
 // Jeśli patrzy więcej niż 1 obiekt, to musimy wykonać głęboką kopię przed zmianą.
-
-
-
-
 
 //todo pomocnicza struktura informująca czy sami jestesmy właścicielami struktury,
 //czy przed zmianą musimy zrobić głęboką copię ....
@@ -39,16 +21,21 @@
 // todo konstruktor przenoszący i destruktor muszą być no-throw.
 
 template <typename K, typename V> class kvfifo {
-	// requires...
 private:
 	using data_list_t = std::list<std::pair<K const &, V>>;
 	using data_map_value_t = std::list<typename data_list_t::iterator>;
+
 	struct data {
 		//mapa klucz, lista iterratorów na pozycje z elements w których, te klucze, value występują.
 		std::map<K, data_map_value_t> map;
+
 		//lista dwukierunkowa z elementami
 		data_list_t elements;
+
+		// Use default empty object constructor:
 		data() = default;
+
+		// Deep Copy Constructor:
 		data(struct data const& other) {
 			for (auto it = other.elements.begin(); it != other.elements.end(); ++it) {
 				elements.push_back(std::make_pair(it->first, it->second));
@@ -66,6 +53,9 @@ private:
 				}
 			}
 		}
+
+		// Use default destructor:
+		~data() noexcept = default;
 	};
 
 	//ZDECYDOWANIE POPRAW!!!
@@ -84,33 +74,64 @@ private:
 	// 	}
 	// }
 
+	// Wołamy tą funkcję gdy tylko będziemy zwracać niestałą referencję
+	// do naszej kolejki: about_to_modify(true)
+	// lub przy modyfikacji kolejki: about_to_modify(false)
+	// Funkcja sprawdza, czy głęboka kopia jest konieczna
+	// i aktualizuje atrybut unshareable.
+	// Źródło: http://www.gotw.ca/gotw/044.htm
+	// Umawiamy się że domyślnie kolejka po modyfikacji będzie shareable
+	// (np. operacje pop, push)
+	// Ale czasami będzie unshareable, np gdy damy referncję metodą front().
+	void about_to_modify(bool copy_is_unshareable = false) {
+		// Głębokiej kopii **nie robimy** wtw gdy:
+		// Jesteśmy unshareable, bo to znaczy że mamy wyłączność na queue_data
+		// Jesteśmy shareable, ale mamy wyłączność na wskaźnik.
+		if (!queue_data.unique() && !unshareable) {
+			// Zrób deep copy:
+			queue_data = std::make_shared<data>(*queue_data);
+		}
+		// W przeciwnym razie możemy zmodyfikować nasze queue_data.
+		// Aktualizuj atrybut unshareable:
+		unshareable = copy_is_unshareable;
+	}
+
 public:
+	bool unshareable;
 	std::shared_ptr<struct data> queue_data;
 
 	// Constructors:
-	kvfifo() {
+	kvfifo() :unshareable(false) {
 		//std::allocate_shared, std::allocate_shared_for_overwrite moze trzeba??
 		std::shared_ptr<data> queue_data = std::make_shared<data>();
 	}
 
-	kvfifo(kvfifo const& other) {
-		queue_data = other.queue_data;
+	kvfifo(kvfifo const& other) : unshareable(false) {
+		// Jeśli możliwe, nie rób deep copy:
+		if (!other.unshareable) {
+			queue_data = other.queue_data;
+		}
+		else {
+			queue_data = std::make_shared<data>(*(other.queue_data));
+		}
 	}
 
-	kvfifo(kvfifo&& other) {
+	kvfifo(kvfifo&& other) noexcept : unshareable(false) {
 		queue_data = other.queue_data;
 		other.queue_data = nullptr; //albo NULL
 	}
 
-	kvfifo(kvfifo const& other, bool deep_copy) {
-		if (deep_copy) {
-
-		}
-	}
-
 	// Operators:
 	kvfifo& operator=(kvfifo other) {
-		queue_data = other.queue_data;
+		// Jeśli możliwe, nie rób deep copy:
+		if (!other.unshareable) {
+			queue_data = other.queue_data;
+		}
+		else {
+			queue_data = std::make_shared<data>(*(other.queue_data));
+		}
+		// Na pewno będziemy shareable:
+		unshareable = false;
 		return *this;
 	}
 
@@ -118,7 +139,9 @@ public:
 
 	// Wstawia wartość v na koniec kolejki, nadając jej klucz k. Złożoność O(log n).
 	void push(K const& k, V const& v) {
-		make_free_to_edit();
+		// Zmodyfikujemy, ale potem będziemy shareable (bo referencje się
+		// unieważniają). Chyba że nie będzie pamięci :DDDDD
+		about_to_modify();
 		queue_data->elements.push_back(std::make_pair(k, v));
 		if (!queue_data->map.contains(k))
 			queue_data->map.emplace(k, data_map_value_t());
@@ -130,7 +153,8 @@ public:
 	// Usuwa pierwszy element z kolejki. Jeśli kolejka jest pusta, to podnosi wyjątek std::invalid_argument. Złożoność O(log n).
 	void pop() {
 		if (empty()) throw std::invalid_argument("Empty queue");
-		make_free_to_edit();
+		
+		about_to_modify();
 
 		K deleted_key = queue_data->elements.begin()->first;
 		queue_data->map.find(deleted_key)->second.pop_front();
@@ -145,7 +169,9 @@ public:
 	// nie ma w kolejce, to podnosi wyjątek std::invalid_argument. Złożoność O(log n).
 	void pop(K const& x) {
 		if (count(x) == 0) throw std::invalid_argument("No matching key");
-		make_free_to_edit();
+
+		about_to_modify();
+
 		auto iter = queue_data->map.find(x);
 		queue_data->list.erase(iter->second.front());
 		iter->second.pop_front();
@@ -162,7 +188,8 @@ public:
 	void move_to_back(K const& k) {
 		size_t how_many = count(k);
 		if (how_many == 0) throw std::invalid_argument("No matching key");
-		make_free_to_edit();
+		
+		about_to_modify();
 
 		auto iter = queue_data->map.find(k);
 		for (size_t i = 0; i < how_many; i++) {
@@ -178,7 +205,9 @@ public:
 	// modyfikująca kolejkę może unieważnić zwrócone referencje. Jeśli kolejka jest
 	// pusta, to podnosi wyjątek std::invalid_argument. Złożoność O(1).
 	std::pair<K const&, V&> front() {
-		// Tymczasowe:
+		if (empty()) throw std::invalid_argument("Empty queue");
+		
+		about_to_modify(true);
 		
 		return {queue_data->elements.front().first, queue_data->elements.front().second};
 	}
@@ -189,21 +218,32 @@ public:
 	}
 
 	std::pair<K const&, V&> back() {
-		//Tymczasowe
+		if (empty()) throw std::invalid_argument("Empty queue");
+
+		about_to_modify(true);
+
 		return {queue_data->elements.back().first, queue_data->elements.back().second};
 	}
 
 	std::pair<K const&, V const&> back() const {
 		if (empty()) throw std::invalid_argument("Empty queue");
-		return std::make_pair((--(queue_data->elements.end()))->first, (--(queue_data->elements.end()))->second);
+		return queue_data->elements.back();
 	}
 
 	// Metody first i last zwracają odpowiednio pierwszą i ostatnią parę
 	// klucz-wartość o danym kluczu, podobnie jak front i back. Jeśli podanego klucza
 	// nie ma w kolejce, to podnosi wyjątek std::invalid_argument. Złożoność O(log n).
 	std::pair<K const&, V&> first(K const& key) {
-		// Tymczasowe
-		return {queue_data->elements.front().first, queue_data->elements.front().second};
+		if (count(key) == 0) throw std::invalid_argument("No matching key");
+		
+		about_to_modify(true);
+
+		auto iter = queue_data->map.find(key);
+		auto list_iter = iter->second.front();
+		std::pair<K const&, V&> res =
+			{list_iter->first, list_iter->second};
+
+		return res;
 	}
 
 	std::pair<K const&, V const&> first(K const& key) const {
@@ -211,14 +251,22 @@ public:
 		auto iter = queue_data->map.find(key);
 		auto list_iter = iter->second.front();
 		std::pair<K const&, V const&> res =
-			std::make_pair(list_iter->first, list_iter->second);
+			{list_iter->first, list_iter->second};
 
 		return res;
 	}
 
 	std::pair<K const&, V&> last(K const& key) {
-		// Tymczasowe
-		return {queue_data->elements.front().first, queue_data->elements.front().second};
+		if (count(key) == 0) throw std::invalid_argument("No matching key");
+
+		about_to_modify(true);
+
+		auto iter = queue_data->map.find(key);
+		auto list_iter = iter->second.back();
+		std::pair<K const&, V&> res =
+			{list_iter->first, list_iter->second};
+
+		return res;
 	}
 
 	std::pair<K const&, V const&> last(K const& key) const {
@@ -251,6 +299,7 @@ public:
 
 	// Usuwa wszystkie elementy z kolejki. Złożoność O(n).
 	void clear() {
+		about_to_modify();
 		queue_data->map.clear();
 		queue_data->elements.clear();
 	}
