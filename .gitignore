@@ -4,3 +4,6 @@
 src/backup.h
 src/a.out
 src/backup.h
+src/alloc_fail.h
+src/kvfifo_test.h
+src/kwasow.h

@@ -23,12 +23,49 @@
 
 template <typename K, typename V> class kvfifo {
 private:
-	using data_list_t = std::list<std::pair<K const &, V>>;
+	using data_list_t = std::list<std::pair<const K, V>>;
 	using data_map_value_t = std::list<typename data_list_t::iterator>;
 
+
+	// Specjalna klasa służąca do obsługi wyjątków, schemat użycia jest
+	// następujący:
+	// Na początku wywołania każdej funkcji która może się nie powieść tworzymy obiekt
+	// exception_guard g z domyślnie zdefiniowanym parametrem failure jako true.
+	// Jeśli podczas wykonywania funkcji zostanie zgłoszony wyjątek, to wykonanie
+	// zostanie wstrzymane i zostanie zawołany destruktor obiektu g, który
+	// zrobi undo ewentualnie zrobionej / zaczętej i nieudanej głębokiej kopii obiektu.
+	// Jeśli wszystko się udało, to na koniec funkcji wołamy metodę
+	// g.no_failure(), która ustawia parametr failure na false.
+	class exception_guard {
+		public:
+			exception_guard(kvfifo *guarded_kvfifo) :
+			guarded_kvfifo(guarded_kvfifo),
+			guarded_queue_data(guarded_kvfifo->queue_data),
+			guarded_unshareable(guarded_kvfifo->unshareable) {}
+
+			~exception_guard() noexcept {
+				if (failure) {
+					// Undo deep copy:
+					guarded_kvfifo->queue_data = guarded_queue_data;
+					guarded_kvfifo->unshareable = guarded_unshareable;
+				}
+			}
+
+			void no_failure() {
+				failure = false;
+			}
+
+
+		private:
+			kvfifo* guarded_kvfifo;
+			std::shared_ptr<struct data> guarded_queue_data;
+			bool guarded_unshareable;
+			bool failure = true;
+	};
+
 	struct data {
-		//mapa klucz, lista iterratorów na pozycje z elements w których, te klucze, value występują.
-		std::map<K, data_map_value_t> map;
+		//mapa klucz, lista iteratorów na pozycje z elements w których, te klucze, value występują.
+		std::map<const K, data_map_value_t> map;
 
 		//lista dwukierunkowa z elementami
 		data_list_t elements;
@@ -39,8 +76,8 @@ private:
 		// Deep Copy Constructor:
 		data(struct data const& other) {
 			data_list_t new_elements;
-			std::map<K, data_map_value_t> new_map;
-			
+			std::map<const K, data_map_value_t> new_map;
+
 			for (auto it = other.elements.begin(); it != other.elements.end(); ++it) {
 				new_elements.push_back({it->first, it->second});
 			}
@@ -51,10 +88,8 @@ private:
 					data_map_value_t new_list;
 					new_list.push_back(it);
 					new_map.emplace(it->first, new_list);
-				}
-				else {
+				} else
 					map_pos->second.push_back(it);
-				}
 			}
 
 			std::swap(map, new_map);
@@ -69,8 +104,14 @@ private:
 	void make_free_to_edit() {
 		if (queue_data.use_count() > 1) {
 			//sprawdz czy mamy wystarczającą pamieć?
-			std::shared_ptr<data> new_ptr = std::make_shared<data>(*queue_data);
-			queue_data = new_ptr;
+			void* memory_check = malloc(2 * sizeof(queue_data));
+			if (memory_check == NULL)
+				throw std::bad_alloc("Not enough memory"); //to wydadałoby naprawic..
+			else {
+				free(memory_check);
+				std::shared_ptr<data> new_ptr = std::make_shared<data>(*queue_data);
+				queue_data = new_ptr;
+			}
 		}
 	}
 
@@ -94,7 +135,7 @@ private:
 		// Głębokiej kopii **nie robimy** wtw gdy:
 		// Jesteśmy unshareable, bo to znaczy że mamy wyłączność na queue_data
 		// Jesteśmy shareable, ale mamy wyłączność na wskaźnik.
-		
+
 		if (!(queue_data.unique()) && !unshareable) {
 			// Zrób deep copy:
 			// std::cout<<"deep copy";
@@ -106,21 +147,19 @@ private:
 		unshareable = copy_is_unshareable;
 	}
 
-	
+
 
 public:
 	// DEBUG:
 	void print_kvfifo() {
-		for (auto x : queue_data->elements) {
-			std::cout<<"("<<x.first<<" "<<x.second<<") ";
-		}
-		std::cout<<"MAP: ";
+		for (auto x : queue_data->elements)
+			std::cout << "(" << x.first << " " << x.second << ") ";
+		std::cout << "MAP: ";
 		for (auto x : queue_data->map) {
-			for (auto y : x.second) {
-				std::cout<<"("<<y->first<<" "<<y->second<<") ";
-			}
+			for (auto y : x.second)
+				std::cout << "(" << y->first << " " << y->second << ") ";
 		}
-		std::cout<<"\n";
+		std::cout << "\n";
 	}
 
 	bool unshareable = false;
@@ -129,41 +168,40 @@ public:
 	// Constructors:
 	kvfifo() {
 		//std::allocate_shared, std::allocate_shared_for_overwrite moze trzeba??
-		// std::cout<<"empty constructor called: ";
+		std::cout<<"empty constructor called: ";
 		queue_data = std::make_shared<data>();
 		// std::cout<<queue_data.use_count()<<"\n";
 	}
 
 	kvfifo(kvfifo const& other) {
-		std::cout<<"copy\n";
-		// std::cout<<"copy constructor called: ";
+		// std::cout << "copy\n";
+		std::cout<<"copy constructor called: ";
 		// Jeśli możliwe, nie rób deep copy:
 		if (!other.unshareable) {
-			std::cout<<"no deep copy: ";
+			// std::cout << "no deep copy: ";
 			queue_data = other.queue_data;
-		}
-		else {
-			std::cout<<"deep copy: ";
+		} else {
+			// std::cout << "deep copy: ";
 			queue_data = std::make_shared<data>(*(other.queue_data));
 		}
 		// std::cout<<"this: "<<queue_data.use_count()<<", other: "<< other.queue_data.use_count()<<"\n";
 	}
 
-	kvfifo(kvfifo&& other) noexcept {
-		std::cout<<"move\n";
+	explicit kvfifo(kvfifo&& other) noexcept {
+		std::cout << "move\n";
+
 		queue_data = other.queue_data;
 		other.queue_data = nullptr; //albo NULL
 	}
 
 	// Operators:
 	kvfifo& operator=(kvfifo other) noexcept {
-		// std::cout<<"operator= called: ";
+		std::cout<<"operator= called: ";
 		// Jeśli możliwe, nie rób deep copy:
 		if (!other.unshareable) {
 			// std::cout<<"no deep copy ";
 			queue_data = other.queue_data;
-		}
-		else {
+		} else {
 			// std::cout<<"deep copy";
 			queue_data = std::make_shared<data>(*(other.queue_data));
 		}
@@ -181,11 +219,11 @@ public:
 		// unieważniają). Chyba że nie będzie pamięci :DDDDD
 		// std::cout<<"push call: "<<queue_data.use_count()<<" ";
 		about_to_modify();
-		
+
 		queue_data->elements.push_back({k, v});
 		if (!queue_data->map.contains(k))
 			queue_data->map.emplace(k, data_map_value_t());
-		else std::cout<<"push: kluczbyl\n";
+		// else std::cout << "push: kluczbyl\n";
 		auto iter = queue_data->map.find(k);
 		iter->second.push_back(std::prev(queue_data->elements.end()));
 	}
@@ -215,7 +253,7 @@ public:
 		about_to_modify();
 
 		auto iter = queue_data->map.find(x);
-		queue_data->list.erase(iter->second.front());
+		queue_data->elements.erase(iter->second.front());
 		iter->second.pop_front();
 
 		if (iter->second.size() == 0)
@@ -231,7 +269,7 @@ public:
 		// std::cout<<"move_to_back call ";
 		size_t how_many = count(k);
 		if (how_many == 0) throw std::invalid_argument("No matching key");
-		
+
 		about_to_modify();
 
 		// iterator w mapie.
@@ -250,9 +288,9 @@ public:
 	// pusta, to podnosi wyjątek std::invalid_argument. Złożoność O(1).
 	std::pair<K const&, V&> front() {
 		if (empty()) throw std::invalid_argument("Empty queue");
-		
+
 		about_to_modify(true);
-		
+		// return queue_data->elements.front();
 		return {queue_data->elements.front().first, queue_data->elements.front().second};
 	}
 
@@ -279,13 +317,13 @@ public:
 	// nie ma w kolejce, to podnosi wyjątek std::invalid_argument. Złożoność O(log n).
 	std::pair<K const&, V&> first(K const& key) {
 		if (count(key) == 0) throw std::invalid_argument("No matching key");
-		
+
 		about_to_modify(true);
 
 		auto iter = queue_data->map.find(key);
 		auto list_iter = iter->second.front();
 		std::pair<K const&, V&> res =
-			{list_iter->first, list_iter->second};
+		{list_iter->first, list_iter->second};
 
 		return res;
 	}
@@ -295,7 +333,7 @@ public:
 		auto iter = queue_data->map.find(key);
 		auto list_iter = iter->second.front();
 		std::pair<K const&, V const&> res =
-			{list_iter->first, list_iter->second};
+		{list_iter->first, list_iter->second};
 
 		return res;
 	}
@@ -308,7 +346,7 @@ public:
 		auto iter = queue_data->map.find(key);
 		auto list_iter = iter->second.back();
 		std::pair<K const&, V&> res =
-			{list_iter->first, list_iter->second};
+		{list_iter->first, list_iter->second};
 
 		return res;
 	}
@@ -319,7 +357,7 @@ public:
 		auto list_iter = iter->second.back();
 
 		std::pair<K const&, V const&> res =
-			{list_iter->first, list_iter->second};
+		{list_iter->first, list_iter->second};
 
 		return res;
 	}
@@ -365,7 +403,8 @@ public:
 	public:
 		using iterator_category = std::bidirectional_iterator_tag;
 		using difference_type   = std::ptrdiff_t;
-		using map_iter_t 		= typename std::map<K, std::list<typename std::list<std::pair<K const &, V>>::iterator>>::iterator;
+		using map_iter_t 		= typename
+		                          std::map<const K, std::list<typename std::list<std::pair<const K, V>>::iterator>>::iterator;
 
 		// Constructor
 		k_iterator(map_iter_t iter) : iter(iter) {}
