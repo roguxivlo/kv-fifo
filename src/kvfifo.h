@@ -1,31 +1,28 @@
 #ifndef KVFIFO_H
 #define KVFIFO_H
 
+//todo czy wszystkie include?
+// todo konstruktur gdy jesteśmy nullptr?
 #include <map>
 #include <list>
 #include <iterator> 	// For std::forward_iterator_tag
 #include <cstddef>  	// For std::ptrdiff_t
 #include <memory>   	// For std::shared_ptr
 #include <stdexcept>	// For std::invalid_argument
-#include <iostream>		// For debug
+#include <iostream>
 
-// Przy wykonywaniu zmiany kolejki, patrzymy ile obiektów patrzy na nasz shared pointer;
-// Jeśli patrzy więcej niż 1 obiekt, to musimy wykonać głęboką kopię przed zmianą.
 
-//todo pomocnicza struktura informująca czy sami jestesmy właścicielami struktury,
-//czy przed zmianą musimy zrobić głęboką copię ....
-// Klasa kvfifo powinna udostępniać niżej opisane operacje. Przy każdej operacji
-// podana jest jej oczekiwana złożoność czasowa przy założeniu, że nie trzeba
-// wykonywać kopii. Oczekiwana złożoność czasowa operacji kopiowania przy zapisie
-// wynosi O(n log n), gdzie n oznacza liczbę elementów przechowywanych w kolejce.
-// Wszystkie operacje muszą zapewniać co najmniej silną odporność na wyjątki,
-// todo konstruktor przenoszący i destruktor muszą być no-throw.
+// todo Tam gdzie jest to możliwe i uzasadnione należy opatrzyć metody kwalifikatorami const i noexcept.
+// Klasa kvfifo powinna być przezroczysta na wyjątki, czyli powinna przepuszczać
+// wszelkie wyjątki zgłaszane przez wywoływane przez nią funkcje i przez operacje
+// na jej składowych, a obserwowalny stan obiektów nie powinien się zmienić.
+// W szczególności operacje modyfikujące zakończone niepowodzeniem nie powinny
+// unieważniać iteratorów.
 
 template <typename K, typename V> class kvfifo {
 private:
 	using data_list_t = std::list<std::pair<const K, V>>;
 	using data_map_value_t = std::list<typename data_list_t::iterator>;
-
 
 	// Specjalna klasa służąca do obsługi wyjątków, schemat użycia jest
 	// następujący:
@@ -37,90 +34,67 @@ private:
 	// Jeśli wszystko się udało, to na koniec funkcji wołamy metodę
 	// g.no_failure(), która ustawia parametr failure na false.
 	class exception_guard {
-		public:
-			exception_guard(kvfifo *guarded_kvfifo) :
+	public:
+		explicit exception_guard(kvfifo* guarded_kvfifo) :
 			guarded_kvfifo(guarded_kvfifo),
 			guarded_queue_data(guarded_kvfifo->queue_data),
 			guarded_unshareable(guarded_kvfifo->unshareable) {}
 
-			~exception_guard() noexcept {
-				if (failure) {
-					// Undo deep copy:
-					guarded_kvfifo->queue_data = guarded_queue_data;
-					guarded_kvfifo->unshareable = guarded_unshareable;
-				}
+		~exception_guard() noexcept {
+			if (failure) {
+				// Undo deep copy:
+				std::swap(guarded_kvfifo->queue_data, guarded_queue_data);
+				guarded_kvfifo->unshareable = guarded_unshareable;
 			}
+			guarded_queue_data.reset();
+		}
 
-			void no_failure() {
-				failure = false;
-			}
+		void no_failure() {
+			failure = false;
+		}
 
 
-		private:
-			kvfifo* guarded_kvfifo;
-			std::shared_ptr<struct data> guarded_queue_data;
-			bool guarded_unshareable;
-			bool failure = true;
+	private:
+		kvfifo* guarded_kvfifo;
+		std::shared_ptr<typename kvfifo<K, V>::data> guarded_queue_data;
+		bool guarded_unshareable;
+		bool failure = true;
 	};
 
+
 	struct data {
-		//mapa klucz, lista iteratorów na pozycje z elements w których, te klucze, value występują.
+		//mapa klucz, lista iterratorów na pozycje z elements w których, te klucze, value występują.
 		std::map<const K, data_map_value_t> map;
 
 		//lista dwukierunkowa z elementami
 		data_list_t elements;
 
-		// Use default empty object constructor:
 		data() = default;
 
-		// Deep Copy Constructor:
+		// Głęboka kopia:
 		data(struct data const& other) {
 			data_list_t new_elements;
 			std::map<const K, data_map_value_t> new_map;
 
-			for (auto it = other.elements.begin(); it != other.elements.end(); ++it) {
-				new_elements.push_back({it->first, it->second});
-			}
+			for (auto it = other.elements.begin(); it != other.elements.end(); ++it)
+				new_elements.emplace_back(it->first, it->second);
 
 			for (auto it = new_elements.begin(); it != new_elements.end(); ++it) {
 				auto map_pos = new_map.find(it->first);
 				if (map_pos == new_map.end()) {
 					data_map_value_t new_list;
-					new_list.push_back(it);
+					new_list.emplace_back(it);
 					new_map.emplace(it->first, new_list);
 				} else
-					map_pos->second.push_back(it);
+					map_pos->second.emplace_back(it);
 			}
 
 			std::swap(map, new_map);
 			std::swap(elements, new_elements);
 		}
 
-		// Use default destructor:
 		~data() noexcept = default;
 	};
-
-	//ZDECYDOWANIE POPRAW!!!
-	void make_free_to_edit() {
-		if (queue_data.use_count() > 1) {
-			//sprawdz czy mamy wystarczającą pamieć?
-			void* memory_check = malloc(2 * sizeof(queue_data));
-			if (memory_check == NULL)
-				throw std::bad_alloc("Not enough memory"); //to wydadałoby naprawic..
-			else {
-				free(memory_check);
-				std::shared_ptr<data> new_ptr = std::make_shared<data>(*queue_data);
-				queue_data = new_ptr;
-			}
-		}
-	}
-
-	// void free_empty_map_node(K deleted_key) {
-	// 	if (queue_data->map.find(deleted_key)->empty()) {
-	// 		delete queue_data->map.find(deleted_key);
-	// 		queue_data->map.erase(deleted_key);
-	// 	}
-	// }
 
 	// Wołamy tą funkcję gdy tylko będziemy zwracać niestałą referencję
 	// do naszej kolejki: about_to_modify(true)
@@ -135,21 +109,22 @@ private:
 		// Głębokiej kopii **nie robimy** wtw gdy:
 		// Jesteśmy unshareable, bo to znaczy że mamy wyłączność na queue_data
 		// Jesteśmy shareable, ale mamy wyłączność na wskaźnik.
+		// Sprawdzamy, czy use count > 2 bo exception guard też patrzy
+		// się na queue_data.
 
-		if (!(queue_data.unique()) && !unshareable) {
+		if (queue_data.use_count() > 2 && !unshareable) {
 			// Zrób deep copy:
-			// std::cout<<"deep copy";
+			std::cout<<"gleb\n";
 			queue_data = std::make_shared<data>(*queue_data);
 		}
-		// std::cout<<std::endl;
 		// W przeciwnym razie możemy zmodyfikować nasze queue_data.
 		// Aktualizuj atrybut unshareable:
 		unshareable = copy_is_unshareable;
 	}
 
-
-
 public:
+
+
 	// DEBUG:
 	void print_kvfifo() {
 		for (auto x : queue_data->elements)
@@ -160,78 +135,90 @@ public:
 				std::cout << "(" << y->first << " " << y->second << ") ";
 		}
 		std::cout << "\n";
+		// std::cout<<"using k_iterator: ";
+		// for (auto it = k_begin(); it!= k_end(); ++it) {
+		// 	auto list = queue_data->map[*it];
+		// 	for (auto i : list) {
+		// 		std::cout <<"("<<i->first<<" "<<i->second<<") ";
+		// 	}
+		// }
+		std::cout<<"\n";
 	}
-
 	bool unshareable = false;
-	std::shared_ptr<struct data> queue_data;
+	std::shared_ptr<typename kvfifo<K, V>::data> queue_data;
 
-	// Constructors:
-	kvfifo() {
-		//std::allocate_shared, std::allocate_shared_for_overwrite moze trzeba??
-		std::cout<<"empty constructor called: ";
-		queue_data = std::make_shared<data>();
-		// std::cout<<queue_data.use_count()<<"\n";
-	}
+	// Konstructory:
+	kvfifo() : queue_data(std::make_shared<data>()) {}
 
 	kvfifo(kvfifo const& other) {
-		// std::cout << "copy\n";
-		std::cout<<"copy constructor called: ";
 		// Jeśli możliwe, nie rób deep copy:
-		if (!other.unshareable) {
-			// std::cout << "no deep copy: ";
+		if (!other.unshareable)
 			queue_data = other.queue_data;
-		} else {
-			// std::cout << "deep copy: ";
+		else
 			queue_data = std::make_shared<data>(*(other.queue_data));
-		}
-		// std::cout<<"this: "<<queue_data.use_count()<<", other: "<< other.queue_data.use_count()<<"\n";
 	}
 
-	explicit kvfifo(kvfifo&& other) noexcept {
-		std::cout << "move\n";
-
+	kvfifo(kvfifo&& other) noexcept {
 		queue_data = other.queue_data;
-		other.queue_data = nullptr; //albo NULL
+		other.queue_data = nullptr;
 	}
 
-	// Operators:
+	~kvfifo() noexcept = default;
+
+	// Operatory:
 	kvfifo& operator=(kvfifo other) noexcept {
-		std::cout<<"operator= called: ";
 		// Jeśli możliwe, nie rób deep copy:
-		if (!other.unshareable) {
-			// std::cout<<"no deep copy ";
+		if (!other.unshareable)
 			queue_data = other.queue_data;
-		} else {
-			// std::cout<<"deep copy";
+		else
 			queue_data = std::make_shared<data>(*(other.queue_data));
-		}
 		// Na pewno będziemy shareable:
 		unshareable = false;
-		// std::cout<<"this: "<<queue_data.use_count()<<", other: "<< other.queue_data.use_count()<<"\n";
 		return *this;
 	}
 
-	// Methods:
+	// Metody:
 
 	// Wstawia wartość v na koniec kolejki, nadając jej klucz k. Złożoność O(log n).
 	void push(K const& k, V const& v) {
+		// std::cout<<"abouttomodify\n";
 		// Zmodyfikujemy, ale potem będziemy shareable (bo referencje się
 		// unieważniają). Chyba że nie będzie pamięci :DDDDD
-		// std::cout<<"push call: "<<queue_data.use_count()<<" ";
+		if (queue_data == nullptr)
+			queue_data = queue_data = std::make_shared<data>();
+		exception_guard g(this);
 		about_to_modify();
+		
+		queue_data->elements.emplace_back(k, v);
+		// std::cout<<"emplaced\n";
+		// Próba wstawienia do mapy:
+		bool was_created = false;
+		try {
+			if (!queue_data->map.contains(k)) {
+				// std::cout<<"in\n";
+				queue_data->map.emplace(k, data_map_value_t());
+				// std::cout<<"out\n";
+				was_created = true;
+			}
+				
 
-		queue_data->elements.push_back({k, v});
-		if (!queue_data->map.contains(k))
-			queue_data->map.emplace(k, data_map_value_t());
-		// else std::cout << "push: kluczbyl\n";
-		auto iter = queue_data->map.find(k);
-		iter->second.push_back(std::prev(queue_data->elements.end()));
+			auto iter = queue_data->map.find(k);
+			
+			iter->second.emplace_back(std::prev(queue_data->elements.end()));
+			// std::cout<<"find fakap\n";
+		} catch (...) {
+			// Undo wstawienia do listy:
+			queue_data->elements.pop_back();
+			if (was_created) queue_data->map.erase(k);
+			throw;
+		}
+		g.no_failure();
 	}
 
 	// Usuwa pierwszy element z kolejki. Jeśli kolejka jest pusta, to podnosi wyjątek std::invalid_argument. Złożoność O(log n).
 	void pop() {
-		// std::cout<<"pop() call. Before: ";
-		if (empty()) throw std::invalid_argument("Empty queue");
+		if (!queue_data || empty()) throw std::invalid_argument("Empty queue");
+		exception_guard g(this);
 		about_to_modify();
 
 		K deleted_key = queue_data->elements.front().first;
@@ -241,14 +228,16 @@ public:
 			queue_data->map.erase(iter);
 		}
 		queue_data->elements.pop_front();
-
+		g.no_failure();
 	}
 
 	// Usuwa pierwszy element o podanym kluczu z kolejki. Jeśli podanego klucza
 	// nie ma w kolejce, to podnosi wyjątek std::invalid_argument. Złożoność O(log n).
 	void pop(K const& x) {
-		// std::cout<<"pop(K) call ";
-		if (count(x) == 0) throw std::invalid_argument("No matching key");
+
+		if (!queue_data ||
+		        count(x) == 0) throw std::invalid_argument("No matching key");
+		exception_guard g(this);
 
 		about_to_modify();
 
@@ -258,7 +247,7 @@ public:
 
 		if (iter->second.size() == 0)
 			queue_data->map.erase(x);
-
+		g.no_failure();
 	}
 
 	// Przesuwa elementy o kluczu k na koniec kolejki, zachowując
@@ -266,20 +255,35 @@ public:
 	// elementu o podanym kluczu nie ma w kolejce. Złożoność O(m + log n), gdzie m to
 	// liczba przesuwanych elementów.
 	void move_to_back(K const& k) {
-		// std::cout<<"move_to_back call ";
+
+		if (!queue_data) throw std::invalid_argument("nullptr");
+		exception_guard g(this);
 		size_t how_many = count(k);
 		if (how_many == 0) throw std::invalid_argument("No matching key");
 
 		about_to_modify();
 
 		// iterator w mapie.
-		auto iter = queue_data->map.find(k);
+		auto iter_list = queue_data->map.find(k)->second;
+		auto iter_list_first = iter_list.begin(); // Iterator na pierwszy el. listy w mapie
 		for (size_t i = 0; i < how_many; i++) {
-			queue_data->elements.erase(iter->second.front());
-			queue_data->elements.push_back({iter->first, iter->second.front()->second});
-			iter->second.push_back(std::prev(queue_data->elements.end()));
-			iter->second.pop_front();
+
+			
+			// *iter_list_first == iterator na pierwsze wystapienie klucza k w elements
+			//Przesuwamy element elem3ents na konuiec:
+			queue_data->elements.splice(queue_data->elements.end(), queue_data->elements, *iter_list_first);
+
+			iter_list_first++;
+
+
+			// K key = iter->first;
+			// V val = iter->second.front()->second;
+			// queue_data->elements.erase(iter->second.front());
+			// queue_data->elements.emplace_back(key, val);
+			// iter->second.emplace_back(std::prev(queue_data->elements.end()));
+			// iter->second.pop_front();
 		}
+		g.no_failure();
 	}
 
 	// Zwraca parę referencji do klucza i wartości znajdującej na początku / końcu kolejki.
@@ -287,10 +291,12 @@ public:
 	// modyfikująca kolejkę może unieważnić zwrócone referencje. Jeśli kolejka jest
 	// pusta, to podnosi wyjątek std::invalid_argument. Złożoność O(1).
 	std::pair<K const&, V&> front() {
+
 		if (empty()) throw std::invalid_argument("Empty queue");
+		exception_guard g(this);
 
 		about_to_modify(true);
-		// return queue_data->elements.front();
+		g.no_failure();
 		return {queue_data->elements.front().first, queue_data->elements.front().second};
 	}
 
@@ -300,10 +306,11 @@ public:
 	}
 
 	std::pair<K const&, V&> back() {
+
 		if (empty()) throw std::invalid_argument("Empty queue");
-
+		exception_guard g(this);
 		about_to_modify(true);
-
+		g.no_failure();
 		return {queue_data->elements.back().first, queue_data->elements.back().second};
 	}
 
@@ -316,20 +323,22 @@ public:
 	// klucz-wartość o danym kluczu, podobnie jak front i back. Jeśli podanego klucza
 	// nie ma w kolejce, to podnosi wyjątek std::invalid_argument. Złożoność O(log n).
 	std::pair<K const&, V&> first(K const& key) {
-		if (count(key) == 0) throw std::invalid_argument("No matching key");
-
+		if (!queue_data ||
+		        count(key) == 0) throw std::invalid_argument("No matching key");
+		exception_guard g(this);
 		about_to_modify(true);
 
 		auto iter = queue_data->map.find(key);
 		auto list_iter = iter->second.front();
 		std::pair<K const&, V&> res =
 		{list_iter->first, list_iter->second};
-
+		g.no_failure();
 		return res;
 	}
 
 	std::pair<K const&, V const&> first(K const& key) const {
-		if (count(key) == 0) throw std::invalid_argument("No matching key");
+		if (!queue_data ||
+		        count(key) == 0) throw std::invalid_argument("No matching key");
 		auto iter = queue_data->map.find(key);
 		auto list_iter = iter->second.front();
 		std::pair<K const&, V const&> res =
@@ -339,7 +348,9 @@ public:
 	}
 
 	std::pair<K const&, V&> last(K const& key) {
-		if (count(key) == 0) throw std::invalid_argument("No matching key");
+		if (!queue_data ||
+		        count(key) == 0) throw std::invalid_argument("No matching key");
+		exception_guard g(this);
 
 		about_to_modify(true);
 
@@ -347,12 +358,13 @@ public:
 		auto list_iter = iter->second.back();
 		std::pair<K const&, V&> res =
 		{list_iter->first, list_iter->second};
-
+		g.no_failure();
 		return res;
 	}
 
 	std::pair<K const&, V const&> last(K const& key) const {
-		if (count(key) == 0) throw std::invalid_argument("No matching key");
+		if (!queue_data ||
+		        count(key) == 0) throw std::invalid_argument("No matching key");
 		auto iter = queue_data->map.find(key);
 		auto list_iter = iter->second.back();
 
@@ -365,95 +377,93 @@ public:
 
 	// Zwraca liczbę elementów w kolejce.
 	size_t size() const {
+		if (!queue_data) return 0;
 		return queue_data->elements.size();
 	}
 
 	// Zwraca true, gdy kolejka jest pusta, a false w przeciwnym przypadku.
 	bool empty() const {
-		return  queue_data->elements.empty();
+		return  size() == 0;
 	}
 
 	// Zwraca liczbę elementów w kolejce o podanym kluczu.
 	size_t count(K const& k) const {
-		if (!queue_data->map.contains(k)) return 0;
+		if (!queue_data || !queue_data->map.contains(k)) return 0;
 		return queue_data->map.find(k)->second.size();
 	}
 
 	// Usuwa wszystkie elementy z kolejki. Złożoność O(n).
 	void clear() {
-		about_to_modify();
-		queue_data->map.clear();
-		queue_data->elements.clear();
+		if (queue_data) {
+			exception_guard g(this);
+			about_to_modify();
+			queue_data->map.clear();
+			queue_data->elements.clear();
+			g.no_failure();
+		}
 	}
 
-	// TODO: Iterators:
 	// Iterator k_iterator oraz metody k_begin i k_end, pozwalające przeglądać zbiór
 	// kluczy w rosnącej kolejności wartości. Iteratory mogą być unieważnione przez
 	// dowolną zakończoną powodzeniem operację modyfikującą kolejkę oraz operacje
-	// front, back, first i last w wersjach bez const. Iterator musi spełniać koncept
-	// std::bidirectional_iterator. Wszelkie operacje w czasie O(log n). Przeglądanie
-	// całej kolejki w czasie O(n). Iterator służy jedynie do przeglądania kolejki
-	// i za jego pomocą nie można modyfikować kolejki, więc zachowuje się jak
-	// const_iterator z biblioteki standardowej.
+	// front, back, first i last w wersjach bez const.
 
-	// Trzeba się zastanowić nad tym co dokładnie przechowuje k_iterator
+	// todo Trzeba się zastanowić nad tym co dokładnie przechowuje k_iterator
 	// i jak wygląda inkrementacja. Na razie niech będzie to wrapper na zwykly
 	// std::map<K, std::list <std::list::Iterator>>::Iterator.
 	struct k_iterator {
 	public:
+
 		using iterator_category = std::bidirectional_iterator_tag;
 		using difference_type   = std::ptrdiff_t;
+		using value_type        = const K;
+		using pointer           = const K*;
+		using reference         = const K&;
 		using map_iter_t 		= typename
-		                          std::map<const K, std::list<typename std::list<std::pair<const K, V>>::iterator>>::iterator;
+		                          std::map<const K, data_map_value_t>:: const_iterator;
 
-		// Constructor
-		k_iterator(map_iter_t iter) : iter(iter) {}
+		k_iterator() = default;
 
-		// Bidirectional const iterator's methods:
+		explicit k_iterator(map_iter_t iter) : iter(iter) {}
 
-		// Dereference 1:
-		const K& operator*() const {
+		// Metody bidirectional const iterator:
+
+		reference operator*() const {
 			return iter->first;
 		}
 
-		// Dereference 2:
-		const K* operator->() const {
+		pointer operator->() const {
 			return &(iter->first);
 		}
 
-		// Prefix increment:
 		k_iterator& operator++() {
-			iter = std::next(iter);
+			++iter;
 			return *this;
 		}
 
-		// Postfix increment (int is a dummy argument, just to
-		// differentiate ++iter from iter++)
+		// int, żeby rozróżnić ++iter od iter++
 		k_iterator operator++(int) {
 			k_iterator tmp = *this;
 			++(*this);
 			return tmp;
 		}
 
-		// Prefix decrement:
 		k_iterator& operator--() {
-			iter = std::prev(iter);
+			--iter;
 			return *this;
 		}
 
-		// Postfix decrement:
 		k_iterator operator--(int) {
 			k_iterator tmp = *this;
 			--(*this);
 			return tmp;
 		}
 
-		// Comparison:
-		bool operator==(const k_iterator& b) {
+		bool operator==(k_iterator const& b) const {
 			return iter == b.iter;
 		}
 
-		bool operator!=(const k_iterator& b) {
+		bool operator!=(k_iterator const& b) const {
 			return iter != b.iter;
 		}
 	private:
@@ -461,21 +471,16 @@ public:
 	};
 
 	k_iterator k_begin() const {
+		if (!queue_data) return k_iterator();
 		return k_iterator(queue_data->map.begin());
 	}
 
 	k_iterator k_end() const {
+		if (!queue_data) return k_iterator();
 		return k_iterator(queue_data->map.end());
 	}
-
+	// Sprawdza czy iterator spełnia koncept:
+	static_assert(std::bidirectional_iterator<k_iterator>);
 };
-
-
-// Tam gdzie jest to możliwe i uzasadnione należy opatrzyć metody kwalifikatorami const i noexcept.
-// Klasa kvfifo powinna być przezroczysta na wyjątki, czyli powinna przepuszczać
-// wszelkie wyjątki zgłaszane przez wywoływane przez nią funkcje i przez operacje
-// na jej składowych, a obserwowalny stan obiektów nie powinien się zmienić.
-// W szczególności operacje modyfikujące zakończone niepowodzeniem nie powinny
-// unieważniać iteratorów.
 
 #endif // KVFIFO_H
